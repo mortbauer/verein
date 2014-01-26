@@ -1,8 +1,9 @@
+#coding=utf-8
 import sys
 import datetime
 import logging
 from app import Client
-from gi.repository import Gtk, Gdk, Gio
+from gi.repository import Gtk, Gdk, Gio, GLib
 
 liststore_clients = Gtk.ListStore(str)
 liststore_clients.append(['martin'])
@@ -36,49 +37,41 @@ class CellRendererAutoComplete(Gtk.CellRendererText):
         self.emit('edited', path, entry.get_text())
 
 
-def dict_cell_data_func(column, cell, model, iter, col_key):
-    # http://faq.pygtk.org/index.py?req=edit&file=faq13.029.htp
-     text = model.get_value(iter, col_key[0])[col_key[1]]
-     cell.set_property("text", text)
+class DictTreeView(Gtk.TreeView):
+    def __init__(self,liststore):
+        super(self.__class__,self).__init__(liststore)
 
-   model = gtk.ListStore(object)
-   tree_view = gtk.TreeView(model)
-   renderer = gtk.CellRendererText()
-   column = gtk.TreeViewColumn("Foo", renderer)
-   column.set_cell_data_func(renderer, dict_cell_data_func, (0, 'foo'))
-   tree_view.append_column(column)
+    def add_column(self,name,key,Renderer=Gtk.CellRendererText):
+        renderer = Renderer()
+        renderer.set_property("editable", True)
+        column = Gtk.TreeViewColumn(name,renderer)
+        column.set_resizable(True)
+        column.set_reorderable(True)
+        column.set_cell_data_func(renderer,self.dict_cell_data_func,(0,key))
+        super(self.__class__,self).append_column(column)
 
-   obj = {'foo': 'foo text'}
-   model.append([obj])
-class ResultWindow(Gtk.Box):
-    def __init__(self,client):
+    @staticmethod
+    def dict_cell_data_func(column, cellrenderer, model, iterator, col_key):
+        # http://faq.pygtk.org/index.py?req=edit&file=faq13.029.htp
+        text = model.get_value(iterator, col_key[0])[col_key[1]]
+        cellrenderer.set_property("text", str(text))
+
+class ResultWidget(Gtk.Box):
+    def __init__(self,liststore):
         Gtk.Box.__init__(self)
-        self.client = client
-        self.liststore = Gtk.ListStore(str,str,float,str,str,str,str)
-        self.treeview = Gtk.TreeView(model=self.liststore)
-        self.add_editable_column('date',0)
-        self.add_editable_column('client',1)
-        self.add_editable_column('amount',2)
-        self.add_editable_column('category',3)
-        self.add_editable_column('comment',4)
-        self.add_editable_column('info',5)
-        self.add_editable_column('tags',6)
-        self.update()
-        self.add(self.treeview)
+        treeview = DictTreeView(liststore)
 
-    def update(self):
-        l = ['date','client','amount','category','comment','info','tags']
-        for doc in self.client.get('')['_items']:
-            self.liststore.append([doc.get(key,'') for key in l])
+        data_model = [
+            {'key':'date','name':'Durchführungsdatum'},
+            {'key':'client','name':'Auftraggeber'},
+            {'key':'amount','name':'Betrag'},
+            {'key':'account','name':'Konto'},
+        ]
 
+        for column in data_model:
+            treeview.add_column(column['name'],column['key'])
 
-    def add_editable_column(self,name,col):
-        renderer_editabletext = Gtk.CellRendererText()
-        renderer_editabletext.set_property("editable", True)
-        column_editabletext = Gtk.TreeViewColumn(
-            name,renderer_editabletext, text=col)
-        self.treeview.append_column(column_editabletext)
-        #renderer_editabletext.connect("edited", getattr(self,'on_%s_edited'%name))
+        self.add(treeview)
 
 
 
@@ -241,7 +234,7 @@ class TransactionWidget(Gtk.Box):
     def on_entered(self,button):
         d = {}
         d['date'] = self.date.get_text()
-        d['payee'] = self.payee.get_text()
+        d['client'] = self.payee.get_text()
         d['tags'] = self.tags.get_text().split(',')
         d['account'] = self.account.get_text()
         d['splits'] = splits = []
@@ -275,13 +268,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # a grid to attach the toolbar
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
-        paned = Gtk.Paned()
-        notebook = Gtk.Notebook()
-        transaction_widget = TransactionWidget(app.client)
-        notebook.append_page(transaction_widget,Gtk.Label('Add',xalign=0))
-        paned.add1(notebook)
-        search_widget = ResultWindow(app.client)
-        paned.add2(search_widget)
+        #transaction_widget = TransactionWidget(app.client)
+        #notebook.append_page(transaction_widget,Gtk.Label('Add',xalign=0))
+        #paned.add1(notebook)
         # a toolbar created in the method create_toolbar (see below)
         toolbar = self.create_toolbar()
         # with extra horizontal space
@@ -290,7 +279,8 @@ class MainWindow(Gtk.ApplicationWindow):
         toolbar.show()
         # attach the toolbar to the grid
         box.add(toolbar)
-        box.pack_start(paned,True,True,0)
+        result_widget = ResultWidget(app.liststore)
+        box.add(result_widget)
         # add the grid to the window
         self.add(box)
 
@@ -339,10 +329,29 @@ class Application(Gtk.Application):
     def __init__(self):
         Gtk.Application.__init__(self)
         self.client = Client()
+        self.liststore = Gtk.ListStore(object)
 
     def do_activate(self):
         win = MainWindow(self)
         win.show_all()
+        #  initial update and setup periodic task
+        self.do_update()
+        update_task = GLib.timeout_add_seconds(10,self.do_update)
+
+
+    def do_update(self):
+        try:
+            items = self.client.get('')['_items']
+            length = len(self.liststore)
+            for i in range(length):
+                self.liststore.set_row(self.liststore._getiter(i),[items[i]])
+            for doc in items[length:]:
+                self.liststore.append([doc])
+        except Exception as e:
+            print('failed to get items %s'%e)
+        # it is important that the function returns True, otherwise it will
+        # wait infinitely
+        return True
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -386,7 +395,4 @@ Gtk.StyleContext.add_provider_for_screen(
 )
 exit_status = app.run(sys.argv)
 sys.exit(exit_status)
-#client = Client()
-#win = TransactionWindow(client)
-#Gtk.main()
 
