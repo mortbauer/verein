@@ -22,38 +22,57 @@ class Client(object):
         self._args = {'headers':self._headers,'auth':(self._username,self._password)}
         self._curies = {}
 
-    def get(self,url):
-        r = requests.get(urljoin(self.base_url,url),**self._args)
-        if r.status_code == 200:
-            return r.json()
+
+    def handle_errors(self,resp):
+        if resp.status_code != 200:
+            try:
+                return resp.status_code,resp.json()
+            except:
+                return resp.status_code,{'message':resp.reason}
         else:
-            r.raise_for_status()
+            return 200,resp.json()
+
+    def get(self,url):
+        try:
+            r = requests.get(urljoin(self.base_url,url),**self._args)
+            return self.handle_errors(r)
+        except requests.RequestException:
+            return 500, {'message':'server not reachable'}
 
     def post(self,url,doc):
-        r = requests.post(urljoin(self.base_url,url),data=json.dumps(doc),**self._args)
-        if r.status_code == 200:
-            return r.json()
-        else:
-            r.raise_for_status()
+        try:
+            r = requests.post(urljoin(self.base_url,url),data=json.dumps(doc),**self._args)
+            return self.handle_errors(r)
+        except requests.RequestException:
+            return 500, {'message':'server not reachable'}
 
     def options(self,url):
-        r = requests.options(urljoin(self.base_url,url),**self._args)
-        if r.status_code == 200:
-            return r.headers
-        else:
-            r.raise_for_status()
+        try:
+            r = requests.options(urljoin(self.base_url,url),**self._args)
+            return self.handle_errors(r)
+        except requests.RequestException:
+            return 500, {'message':'server not reachable'}
 
     def delete(self,url):
-        r = requests.delete(urljoin(self.base_url,url),**self._args)
-        return r.json()
+        try:
+            r = requests.delete(urljoin(self.base_url,url),**self._args)
+            return self.handle_errors(r)
+        except requests.RequestException:
+            return 500, {'message':'server not reachable'}
 
     def patch(self,url,doc):
-        r = requests.patch(urljoin(self.base_url,url),data=json.dumps(doc),**self._args)
-        return r
+        try:
+            r = requests.patch(urljoin(self.base_url,url),data=json.dumps(doc),**self._args)
+            return self.handle_errors(r)
+        except requests.RequestException:
+            return 500, {'message':'server not reachable'}
 
     def put(self,url,doc):
-        r = requests.put(urljoin(self.base_url,url),data=json.dumps(doc),**self._args)
-        return r.json()
+        try:
+            r = requests.put(urljoin(self.base_url,url),data=json.dumps(doc),**self._args)
+            return self.handle_errors(r)
+        except requests.RequestException:
+            return 500, {'message':'server not reachable'}
 
     def _search_date(self,date=None,start=None,end=None):
         if date:

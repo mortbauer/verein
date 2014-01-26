@@ -33,7 +33,7 @@ class CellRendererAutoComplete(Gtk.CellRendererText):
         entry.grab_focus()
         return entry
 
-    def editing_done(self, entry, path):
+    def editing_done(self):
         self.emit('edited', path, entry.get_text())
 
 
@@ -56,10 +56,13 @@ class DictTreeView(Gtk.TreeView):
         text = model.get_value(iterator, col_key[0])[col_key[1]]
         cellrenderer.set_property("text", str(text))
 
-class ResultWidget(Gtk.Box):
+class ResultWidget(Gtk.ScrolledWindow):
     def __init__(self,liststore):
-        Gtk.Box.__init__(self)
+        super(self.__class__,self).__init__()
         treeview = DictTreeView(liststore)
+        treeview.set_vexpand(True)
+        treeview.set_hexpand(True)
+
 
         data_model = [
             {'key':'date','name':'Durchführungsdatum'},
@@ -75,9 +78,9 @@ class ResultWidget(Gtk.Box):
 
 
 
-class TransactionWidget(Gtk.Box):
+class TransactionWidget(Gtk.Window):
     def __init__(self,client):
-        Gtk.Box.__init__(self)
+        super(self.__class__,self).__init__()
         self.client = client
 
         #listbox = Gtk.Box()
@@ -185,9 +188,6 @@ class TransactionWidget(Gtk.Box):
         button.connect('clicked',self.on_entered)
         listbox.add(button)
 
-
-        self.connect("delete-event", Gtk.main_quit)
-
     def _set_initial_values(self):
         self.date.set_text(datetime.datetime.strftime(datetime.datetime.now(),'%d.%m.%Y'))
         self.splits.clear()
@@ -246,14 +246,17 @@ class TransactionWidget(Gtk.Box):
                  }
             )
         d['comment'] = self.comment.get_text()
-        resp = self.client.put('',d)
-        if resp['status_code'] == 200:
+        status_code, resp = self.client.put('',d)
+        if status_code == 200:
             self.infobar.set_message_type(Gtk.MessageType.INFO)
             self._set_initial_values()
-        elif resp['status_code'] == 400:
-            self.infobar.set_message_type(Gtk.MessageType.ERROR)
+        elif status_code == 400:
+            self.infobar.set_message_type(Gtk.MessageType.WARNING)
             self.infolabel.set_text('\n'.join(
                 ['{0}: {1}'.format(k,v) for k,v in resp['issues'].items()]))
+        else:
+            self.infobar.set_message_type(Gtk.MessageType.ERROR)
+            self.infolabel.set_text(resp['message'])
 
     def on_payees_changed(self,value):
         pass
@@ -264,7 +267,7 @@ class TransactionWidget(Gtk.Box):
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         Gtk.Window.__init__(self, title="Accounter", application=app)
-        self.set_default_size(400, 200)
+        self.set_default_size(800, 800)
 
         # a grid to attach the toolbar
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
@@ -279,10 +282,15 @@ class MainWindow(Gtk.ApplicationWindow):
         toolbar.show()
         # attach the toolbar to the grid
         box.add(toolbar)
+
+        # set infobar
+        box.add(app.infobar)
+
         result_widget = ResultWidget(app.liststore)
         box.add(result_widget)
         # add the grid to the window
         self.add(box)
+
 
     # a method to create the toolbar
     def create_toolbar(self):
@@ -292,25 +300,17 @@ class MainWindow(Gtk.ApplicationWindow):
         # which is the primary toolbar of the application
         toolbar.get_style_context().add_class(Gtk.STYLE_CLASS_PRIMARY_TOOLBAR);
 
-        # create a button for the "new" action, with a stock image
-        new_button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_NEW)
-        # label is shown
-        new_button.set_is_important(True)
-        # insert the button at position in the toolbar
-        toolbar.insert(new_button, 0)
-        # show the button
-        new_button.show()
-        # set the name of the action associated with the button.
-        # The action controls the application (app)
-        new_button.set_action_name("app.new")
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_ADD)
+        button.set_is_important(True)
+        toolbar.insert(button, 0)
+        button.show()
+        button.set_action_name("app.add")
 
-        # button for the "open" action
-        open_button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_OPEN)
-        open_button.set_is_important(True)
-        toolbar.insert(open_button, 1)
-        open_button.show()
-        open_button.set_action_name("app.open")
-
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_REFRESH)
+        button.set_is_important(True)
+        toolbar.insert(button, 0)
+        button.show()
+        button.set_action_name("app.update")
         return toolbar
 
     # callback method for fullscreen / leave fullscreen
@@ -330,28 +330,19 @@ class Application(Gtk.Application):
         Gtk.Application.__init__(self)
         self.client = Client()
         self.liststore = Gtk.ListStore(object)
+        self.infolabel = Gtk.Label()
+        self.infobar = Gtk.InfoBar()
+        content = self.infobar.get_content_area()
+        content.add(self.infolabel)
 
     def do_activate(self):
         win = MainWindow(self)
+        self.transaction_win = TransactionWidget(self.client)
         win.show_all()
         #  initial update and setup periodic task
-        self.do_update()
-        update_task = GLib.timeout_add_seconds(10,self.do_update)
+        self.update_callback()
+        #update_task = GLib.timeout_add_seconds(10,self.do_update)
 
-
-    def do_update(self):
-        try:
-            items = self.client.get('')['_items']
-            length = len(self.liststore)
-            for i in range(length):
-                self.liststore.set_row(self.liststore._getiter(i),[items[i]])
-            for doc in items[length:]:
-                self.liststore.append([doc])
-        except Exception as e:
-            print('failed to get items %s'%e)
-        # it is important that the function returns True, otherwise it will
-        # wait infinitely
-        return True
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -360,28 +351,48 @@ class Application(Gtk.Application):
         # callback method (see below):
 
         # new
-        new_action = Gio.SimpleAction.new("new", None)
-        new_action.connect("activate", self.new_callback)
+        new_action = Gio.SimpleAction.new("add", None)
+        new_action.connect("activate", self.transaction_callback)
         app.add_action(new_action)
 
-        # open
-        open_action = Gio.SimpleAction.new("open", None)
-        open_action.connect("activate", self.open_callback)
-        app.add_action(open_action)
+        # update
+        update_action = Gio.SimpleAction.new("update", None)
+        update_action.connect("activate", self.update_callback)
+        app.add_action(update_action)
 
     # callback method for new
-    def new_callback(self, action, parameter):
-        print "You clicked \"New\"."
+    def transaction_callback(self, action, parameter):
+        self.transaction_win.show_all()
 
-    # callback method for open
-    def open_callback(self, action, parameter):
-        print "You clicked \"Open\"."
+    def update_callback(self,*args):
+        status,resp = self.client.get('')
+        if status != 200:
+            self.infolabel.set_text(resp['message'])
+            self.infobar.set_message_type(Gtk.MessageType.ERROR)
+        else:
+            self.infolabel.set_text('')
+            self.infobar.set_message_type(Gtk.MessageType.INFO)
+            items = resp['_items']
+            length = len(self.liststore)
+            for i in range(length):
+                self.liststore.set_row(self.liststore._getiter(i),[items[i]])
+            for doc in items[length:]:
+                self.liststore.append([doc])
+        # it is important that the function returns True, otherwise it will
+        # wait infinitely
+        return True
 
 app = Application()
-
+#FF6600;
 css = """
 .error {
-    background-color: #FF6600;
+    background-color: #8B0000;
+}
+.warning {
+    background-color: #FF8C00;
+}
+.info {
+    background-color: #BCEE68;
 }
 """
 
