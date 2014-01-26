@@ -1,0 +1,7 @@
+flask
+flask-script
+pymongo
+flask-restful
+cerberus
+simplejson
+python-dateutil
