@@ -1,7 +1,9 @@
+from copy import deepcopy
+from bson import ObjectId
 import datetime
 from flask import Blueprint, current_app, render_template, request, make_response, jsonify, g
 from flask.views import MethodView
-from ..utils import get_payload, send_response, str_to_date, serialize, Validator
+from ..utils import get_payload, send_response, str_to_date, serialize, Validator, get_docs
 from ..login import check_valid_auth
 
 mod = Blueprint('accounting', __name__, url_prefix='/api/accounting')
@@ -37,7 +39,21 @@ buchungs_schema = {
     '_id':{'type':'objectid','required':True},
 }
 buchungs_validator = Validator(buchungs_schema)
-
+unwind =[
+            {'$unwind':'$splits'},
+            {'$project':{
+                'date':1,
+                'client':1,
+                'tags':1,
+                'account':1,
+                'info':1,
+                'amount':'$splits.amount',
+                'category':'$splits.category',
+                'comment':{'$concat':['$splits.comment',' ','$comment']},
+                '_edit_by':1,
+                '_edit_time':1}
+            }
+        ]
 
 def convert_dates(payload):
     if 'date' in payload:
@@ -61,54 +77,59 @@ def create_search(payload):
 
 class Buchungen(MethodView):
     def get(self):
-        docs = current_app.db.buchungen.aggregate([
-            {'$unwind':'$splits'},
-            {'$project':{
-                'date':1,
-                'client':1,
-                'tags':1,
-                'account':1,
-                'info':1,
-                'amount':'$splits.amount',
-                'category':'$splits.category',
-                'comment':{'$concat':['$splits.comment',' ','$comment']},
-                '_edit_by':1,
-                '_edit_time':1}
-            }
-        ])
-        return send_response({'_items':[doc for doc in docs['result']]})
+        docs = current_app.db.buchungen.find()
+        return send_response({'_items':[doc for doc in docs]})
 
     def put(self):
-        p = get_payload()
-        payload = serialize(p,buchungs_schema_put)
-        if payload:
+        docs = get_docs()
+        if not docs:
+            return send_response({
+                'message':'no data provided'},status=400)
+        inserted = []
+        for doc in docs:
+            payload = serialize(doc,buchungs_schema_put)
             if not buchungs_validator_put.validate(payload):
                 return send_response({
                     'issues':buchungs_validator_put.errors},status=400)
             payload['_edit_time'] = datetime.datetime.now()
             #payload['_edit_by'] = g.user['username']
-            print(payload)
-            current_app.db.buchungen.insert(payload)
-            return send_response({})
-        else:
+            # unwind splits and insert them as multiple docs
+            splits = payload.pop('splits')
+            gcomment = payload.get('comment','')
+            for split in splits:
+                newdoc = deepcopy(payload)
+                newdoc['amount'] = split['amount']
+                newdoc['category'] = split.get('category')
+                if split.get('comment','') and gcomment:
+                    newdoc['comment'] = '; '.join((split.get('comment',''),gcomment))
+                else:
+                    newdoc['comment'] = max(split.get('comment',''),gcomment)
+                newdoc['_id'] = ObjectId()
+                current_app.db.buchungen.insert(newdoc)
+                inserted.append(newdoc)
+        return send_response({
+            'message':'inserted %s transactions'%len(inserted),
+            '_items':inserted})
+
+    def patch(self):
+        docs = get_docs()
+        if not docs:
             return send_response({
                 'message':'no data provided'},status=400)
-
-    def post(self):
-        payload = get_payload()
-        if payload:
-            if 'date' in payload:
-                payload['date'] = str_to_date(payload['date'])
-            if '_edite_time' in payload:
-                payload['_edite_time'] = str_to_date(payload['_edite_time'])
-            if not buchungs_validator.validate(payload):
+        updated = []
+        for doc in docs:
+            payload = serialize(doc,buchungs_schema)
+            payload['_edit_time'] = datetime.datetime.now()
+            if not buchungs_validator.validate_update(payload):
                 return send_response({
                     'issues':buchungs_validator.errors},status=400)
-            current_app.db.buchungen.insert(payload)
-            return send_response(payload)
-        else:
-            return send_response({
-                'message':'no payload data provided'},status=400)
+            if not '_id' in payload:
+                return send_response({
+                    'issues':{'_id':'required field'}},status=400)
+            _id = payload.pop('_id')
+            current_app.db.buchungen.update({'_id':_id},{'$set':payload})
+            updated.append(current_app.db.buchungen.find_one(_id))
+        return send_response({'message':'updated %s docs'%len(updated),'_items':updated})
 
 class Search(MethodView):
     def post(self):

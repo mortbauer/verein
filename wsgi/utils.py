@@ -14,7 +14,6 @@ from BaseHTTPServer import BaseHTTPRequestHandler
 from io import StringIO
 import hashlib
 import dateutil.parser
-
 import cerberus
 
 
@@ -47,13 +46,21 @@ class Validator(cerberus.Validator):
             self._error(field, cerberus.errors.ERROR_EMPTY_NOT_ALLOWED)
 
     def _validate_type_objectid(self, field, value):
-        """ Enables validation for `objectid` schema attribute.
+        """ Enables validation for `objectid` data type.
 
         :param field: field name.
         :param value: field value.
+
+        .. versionchanged:: 0.3
+           Support for new 'self._error' signature introduced with Cerberus
+           v0.5.
+
+        .. versionchanged:: 0.1.1
+           regex check replaced with proper type check.
         """
-        if not re.match('[a-f0-9]{24}', value):
-            self._error(field, ERROR_BAD_TYPE % 'ObjectId')
+        if not isinstance(value, ObjectId):
+            self._error(field, "value '%s' cannot be converted to a ObjectId"
+                        % value)
 
 class HTTPRequest(BaseHTTPRequestHandler):
     def __init__(self, request_text):
@@ -228,6 +235,14 @@ def get_payload():
     else:
         InvalidUsage('Unknown or no Content-Type header supplied')
 
+def get_docs():
+    p = get_payload()
+    if p:
+        if isinstance(p,dict):
+            return [p]
+        else:
+            return data
+
 
 def str_to_date(string):
     """ Converts a RFC-1123 string to the corresponding datetime value.
@@ -241,7 +256,10 @@ def date_to_str(date):
 
     :param date: the datetime value to convert.
     """
-    return datetime.datetime.strftime(date,'%d.%m.%Y') if date else None
+    if not date.minute:
+        return datetime.datetime.strftime(date,'%d.%m.%Y') if date else None
+    else:
+        return datetime.datetime.strftime(date,'%d.%m.%Y %H:%M:%S') if date else None
 
 
 def calc_hash(value):
