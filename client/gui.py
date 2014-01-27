@@ -78,9 +78,12 @@ class DictTreeView(Gtk.TreeView):
         cellrenderer.set_property("text", str(text))
 
     def on_cells_edited(self,widget,path,text,key,typeconverter):
-        if self.get_model()[path][0][key] != typeconverter(text):
-            self.emit('edited',path,key,self.get_model()[path][0][key])
-            self.get_model()[path][0][key] = typeconverter(text)
+        try:
+            if self.get_model()[path][0][key] != typeconverter(text):
+                self.emit('edited',path,key,self.get_model()[path][0][key])
+                self.get_model()[path][0][key] = typeconverter(text)
+        except:
+            print('not allowed')
 
 class ResultWidget(Gtk.ScrolledWindow):
     def __init__(self,liststore,app):
@@ -92,20 +95,20 @@ class ResultWidget(Gtk.ScrolledWindow):
 
 
         data_model = [
-            {'key':'date','name':'Durchführungsdatum'},
-            {'key':'client','name':'Auftraggeber'},
-            {'key':'amount','name':'Betrag'},
-            {'key':'account','name':'Konto'},
-            {'key':'category','name':'Kategorie'},
-            {'key':'comment','name':'Kommentar'},
+            {'key':'date','name':'Durchführungsdatum','type':str},
+            {'key':'client','name':'Auftraggeber','type':str},
+            {'key':'amount','name':'Betrag','type':float},
+            {'key':'account','name':'Konto','type':str},
+            {'key':'category','name':'Kategorie','type':str},
+            {'key':'comment','name':'Kommentar','type':str},
         ]
         for column in data_model:
-            treeview.add_column(column['name'],column['key'])
+            treeview.add_column(column['name'],column['key'],typeconverter=column['type'])
 
         data_model = [
-            {'key':'_edit_time','name':'bearbeitet'},
-            {'key':'_edit_by','name':'bearbeitet von'},
-            {'key':'_id','name':'id'},
+            {'key':'_edit_time','name':'bearbeitet','type':str},
+            {'key':'_edit_by','name':'bearbeitet von','type':str},
+            {'key':'_id','name':'id','type':str},
         ]
 
         for column in data_model:
@@ -116,9 +119,10 @@ class ResultWidget(Gtk.ScrolledWindow):
 
 
 class TransactionWindow(Gtk.Window):
-    def __init__(self,client):
+    def __init__(self,app):
         super(self.__class__,self).__init__(title='Add Transaction')
-        self.client = client
+        self.client = app.client
+        self.app = app
 
         #listbox = Gtk.Box()
         listbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
@@ -237,7 +241,6 @@ class TransactionWindow(Gtk.Window):
         self.infolabel.set_text('')
 
     def on_splits_amount_edited(self,widget,path,text):
-        print(widget,self.splits)
         try:
             value = float(text)
         except:
@@ -286,8 +289,12 @@ class TransactionWindow(Gtk.Window):
                  }
             )
         d['comment'] = self.comment.get_text()
-        if handle_errors(self.infolabel,self.infobar,self.client.put('',d)):
+        resp = handle_errors(self.infolabel,self.infobar,self.client.put('',d))
+        if resp:
             self._set_initial_values()
+            for item in resp['_items']:
+                self.app.liststore.append([item])
+
 
     def on_payees_changed(self,value):
         pass
@@ -465,7 +472,7 @@ class Application(Gtk.Application):
     @property
     def transaction_window(self):
         if not self._transaction_window:
-            self._transaction_window = TransactionWindow(self.client)
+            self._transaction_window = TransactionWindow(self)
             self._transaction_window.connect('delete-event',self.unset_transaction_window)
         return self._transaction_window
 
