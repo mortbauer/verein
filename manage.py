@@ -3,6 +3,7 @@
 from wsgi import create_app
 from flask.ext.script import Manager
 from bson.objectid import ObjectId
+import hashlib
 
 app = create_app()
 manager = Manager(app)
@@ -15,14 +16,6 @@ def make_shell_context():
 def run():
     """Run in local machine."""
     app.run(host='localhost',debug=True)
-
-@manager.command
-def create_user(name='martin',password='martin',roles=['admin']):
-    from wsgi.extensions import mongo
-    mongo.db.users.remove({'username':name})
-    if mongo.db.users.find_one({'username':name}):
-        raise Exception('username {0} already existing'.format(name))
-    mongo.db.users.insert({'username':name,'password':password,'roles':roles})
 
 @manager.command
 def create_test_article():
@@ -43,6 +36,25 @@ def create_test_article():
     }
     mongo.db.articles.insert(post)
 
+
+@manager.command
+def create_user(username='martin',password='martin',roles=['admin']):
+    userhash = hashlib.sha1()
+    encryptpass = app.bcrypt.generate_password_hash(password)
+    encrypted_password = unicode(encryptpass)
+    userhash.update(username)
+    if app.db.users.find_one({'username':username}):
+        raise Exception('username {0} already existing'.format(username))
+    app.db.users.insert({
+        'username':username,
+        'password':encrypted_password,
+        'roles':roles,
+        'user_id':userhash.hexdigest(),
+    })
+
+@manager.command
+def delete_user(username='martin'):
+    app.db.users.remove({'username':username})
 
 if __name__ == "__main__":
     manager.run()

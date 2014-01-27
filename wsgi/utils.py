@@ -2,7 +2,7 @@
 import cerberus
 from abc import ABCMeta, abstractmethod
 import datetime
-from bson.objectid import ObjectId
+from bson import ObjectId
 from bson.json_util import dumps
 from flask import request, abort, make_response, Response
 from werkzeug.exceptions import BadRequest
@@ -14,6 +14,46 @@ from BaseHTTPServer import BaseHTTPRequestHandler
 from io import StringIO
 import hashlib
 import dateutil.parser
+
+import cerberus
+
+
+class Validator(cerberus.Validator):
+    """ A cerberus.Validator subclass adding the `unique` contraint to
+    Cerberus standard validation.
+
+    :param schema: the validation schema, to be composed according to Cerberus
+                   documentation.
+    :param resource: the resource name.
+
+    .. versionchanged:: 0.0.6
+       Support for 'allow_unknown' which allows to successfully validate
+       unknown key/value pairs.
+
+    .. versionchanged:: 0.0.4
+       Support for 'transparent_schema_rules' introduced with Cerberus 0.0.3,
+       which allows for insertion of 'default' values in POST requests.
+    """
+    def __init__(self, schema,**kwargs):
+        super(Validator, self).__init__(schema, transparent_schema_rules=True,**kwargs)
+
+    def _validate_forbidden(self, forbidden, field, value):
+        if value in forbidden:
+            self._error(field,"value '%s' is forbidden"%value)
+
+    def _validate_empty(self,empty,field,value):
+        super(self.__class__,self)._validate_empty(empty,field,value)
+        if isinstance(value,list) and len(value) == 0 and not empty:
+            self._error(field, cerberus.errors.ERROR_EMPTY_NOT_ALLOWED)
+
+    def _validate_type_objectid(self, field, value):
+        """ Enables validation for `objectid` schema attribute.
+
+        :param field: field name.
+        :param value: field value.
+        """
+        if not re.match('[a-f0-9]{24}', value):
+            self._error(field, ERROR_BAD_TYPE % 'ObjectId')
 
 class HTTPRequest(BaseHTTPRequestHandler):
     def __init__(self, request_text):
@@ -42,6 +82,55 @@ class APIEncoder(json.JSONEncoder):
             # BSON/Mongo ObjectId is rendered as unicode
             return str(obj)
         return json.JSONEncoder.default(self, obj)
+
+def serialize(document, schema):
+    """ Recursively handles field values that require data-aware serialization.
+    Relies on the app.data.serializers dictionary.
+
+    .. versionadded:: 0.1.1
+    """
+    serializers ={
+        'datetime':str_to_date,
+        'objectid': ObjectId,
+    }
+    for field in document:
+        if field in schema:
+            field_schema = schema[field]
+            field_type = field_schema['type']
+            if 'schema' in field_schema:
+                field_schema = field_schema['schema']
+                if 'dict' in (field_type, field_schema.get('type', '')):
+                    # either a dict or a list of dicts
+                    embedded = [document[field]] if field_type == 'dict' \
+                        else document[field]
+                    for subdocument in embedded:
+                        if 'schema' in field_schema:
+                            serialize(subdocument,
+                                        schema=field_schema['schema'])
+                else:
+                    # a list of one type, arbirtrary length
+                    field_type = field_schema['type']
+                    if field_type in serializers:
+                        i = 0
+                        for v in document[field]:
+                            document[field][i] = \
+                                serializers[field_type](v)
+                            i += 1
+            elif 'items' in field_schema:
+                # a list of multiple types, fixed length
+                i = 0
+                for s, v in zip(field_schema['items'], document[field]):
+                    field_type = s['type'] if 'type' in s else None
+                    if field_type in serializers:
+                        document[field][i] = \
+                            serializers[field_type](
+                                document[field][i])
+                    i += 1
+            elif field_type in serializers:
+                # a simple field
+                document[field] = \
+                    serializers[field_type](document[field])
+    return document
 
 def send_response(data, last_modified=None, etag=None,status=200, host=None):
     """ Prepares the response object according to the client request and
@@ -152,7 +241,7 @@ def date_to_str(date):
 
     :param date: the datetime value to convert.
     """
-    return datetime.datetime.strftime(date,'%a, %d %b %Y %H:%M:%S GMT') if date else None
+    return datetime.datetime.strftime(date,'%d.%m.%Y') if date else None
 
 
 def calc_hash(value):

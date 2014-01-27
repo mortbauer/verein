@@ -16,8 +16,16 @@ def create_app():
 def configure_blueprints(app):
     from .api import accounting
     app.register_blueprint(accounting.mod)
+    from . import login
+    app.register_blueprint(login.mod)
 
 def configure_extensions(app):
     from . mongo import Mongo
     mongo = Mongo(app)
-    app.db = mongo.db
+    app.db = mongo.db.mortbauer
+    from simplekv.memory import DictStore
+    from flask.ext.kvsession import KVSessionExtension
+    store = DictStore()
+    KVSessionExtension(store, app)
+    from flask.ext.bcrypt import Bcrypt
+    app.bcrypt = Bcrypt(app)
