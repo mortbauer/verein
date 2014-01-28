@@ -1,9 +1,19 @@
 #coding=utf-8
 import sys
 import datetime
+import dateutil.parser
 import logging
+from collections import OrderedDict
+from copy import deepcopy
 from app import Client
 from gi.repository import Gtk, Gdk, Gio, GLib, GObject
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter('%(funcName)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 liststore_clients = Gtk.ListStore(str)
 liststore_clients.append(['martin'])
@@ -11,6 +21,28 @@ liststore_clients.append(['martin'])
 
 liststore_categories = Gtk.ListStore(str)
 liststore_categories.append(['test'])
+
+DATE = '%d.%m.%Y'
+DATETIME = '%d.%m.%Y-%H:%M:%S'
+
+data_model = OrderedDict((
+    ('date',{'name':'Durchführungsdatum',
+            'from_view':lambda x:datetime.datetime.strftime(
+                dateutil.parser.parse(x),DATE),
+             'editable':True}),
+    ('client',{'name':'Auftraggeber','editable':True}),
+    ('amount',{'name':'Betrag','from_view':float,'to_view':str,'editable':True}),
+    ('account',{'name':'Konto','editable':True}),
+    ('category',{'name':'Kategorie','editable':True}),
+    ('comment',{'name':'Kommentar','editable':True}),
+    ('tags',{'name':'Tags',
+            'to_view':lambda x:', '.join(x),
+            'from_view':lambda x:x.split(',') if ',' in x else x.split(),
+             'editable':True}),
+    ('_edit_time',{'name':'bearbeitet','editable':False}),
+    ('_edit_by',{'name':'bearbeitet von','editable':False}),
+    ('_id',{'name':'id','editable':False}),
+))
 
 def handle_errors(infolabel,infobar,resp):
     if resp[0] == 200:
@@ -33,9 +65,15 @@ class CellRendererAutoComplete(Gtk.CellRendererText):
 
     __gtype_name__ = 'CellRendererAutoComplete'
 
-    def __init__(self, completion):
-        self.completion = completion
-        Gtk.CellRendererText.__init__(self)
+    def __init__(self, liststore):
+        super(self.__class__,self).__init__()
+        if isinstance(liststore,Gtk.ListStore):
+            self.completion = Gtk.EntryCompletion()
+            self.completion.set_model(liststore)
+            self.completion.set_text_column(0)
+        else:
+            raise Exception('must be of type Gtk.ListStore, got %s'%type(liststore))
+
 
     def do_start_editing(
                self, event, treeview, path, background_area, cell_area, flags):
@@ -48,271 +86,192 @@ class CellRendererAutoComplete(Gtk.CellRendererText):
         entry.grab_focus()
         return entry
 
-    def editing_done(self):
+    def editing_done(self,entry,path):
         self.emit('edited', path, entry.get_text())
 
 
 class DictTreeView(Gtk.TreeView):
     __gsignals__ = {
-            'edited': (GObject.SIGNAL_RUN_FIRST, None,(object,object,object,))
+            'edited': (GObject.SIGNAL_RUN_LAST, None,(object,object))
         }
 
     def __init__(self,liststore):
         super(self.__class__,self).__init__(liststore)
 
-    def add_column(self,name,key,Renderer=Gtk.CellRendererText,editable=True,typeconverter=str):
-        renderer = Renderer()
+    def add_column(self,name,key,renderer=None,
+                   editable=True,from_view=None,to_view=None):
+        if not renderer:
+            renderer = Gtk.CellRendererText()
         renderer.set_property("editable", editable)
         column = Gtk.TreeViewColumn(name,renderer)
         column.set_resizable(True)
         column.set_reorderable(True)
-        column.set_cell_data_func(renderer,self.dict_cell_data_func,(0,key))
+        column.set_cell_data_func(renderer,self.dict_cell_data_func,(0,key,to_view))
         if editable:
-            renderer.connect('edited',self.on_cells_edited,key,typeconverter)
+            renderer.connect('edited',self.on_cells_edited,key,from_view)
         super(self.__class__,self).append_column(column)
 
     @staticmethod
-    def dict_cell_data_func(column, cellrenderer, model, iterator, col_key):
+    def dict_cell_data_func(column, cellrenderer, model, iterator, data):
         # http://faq.pygtk.org/index.py?req=edit&file=faq13.029.htp
-        text = model.get_value(iterator, col_key[0]).get(col_key[1])
-        cellrenderer.set_property("text", str(text))
-
-    def on_cells_edited(self,widget,path,text,key,typeconverter):
+        value = model.get_value(iterator, data[0]).get(data[1],'')
         try:
-            if self.get_model()[path][0][key] != typeconverter(text):
-                self.emit('edited',path,key,self.get_model()[path][0][key])
-                self.get_model()[path][0][key] = typeconverter(text)
+            text = data[2](value) if data[2] else str(value)
+            cellrenderer.set_property("text", text)
         except:
-            print('not allowed')
+            logger.error('failed to format {0}'.format(value))
+
+    def on_cells_edited(self,widget,path,text,key,from_view=None):
+        try:
+            value = from_view(text) if from_view else text
+            if self.get_model()[path][0].get(key) != value:
+                self.get_model()[path][0][key] = value
+                self.emit('edited',path,key)
+        except:
+            logger.error('failed to process {0}'.format(text))
+
 
 class ResultWidget(Gtk.ScrolledWindow):
-    def __init__(self,liststore,app):
+    def __init__(self,app):
         super(self.__class__,self).__init__()
-        treeview = DictTreeView(liststore)
+        treeview = DictTreeView(app.liststore_search)
         treeview.connect('edited',app.on_edited)
         treeview.set_vexpand(True)
         treeview.set_hexpand(True)
 
-
-        data_model = [
-            {'key':'date','name':'Durchführungsdatum','type':str},
-            {'key':'client','name':'Auftraggeber','type':str},
-            {'key':'amount','name':'Betrag','type':float},
-            {'key':'account','name':'Konto','type':str},
-            {'key':'category','name':'Kategorie','type':str},
-            {'key':'comment','name':'Kommentar','type':str},
-        ]
-        for column in data_model:
-            treeview.add_column(column['name'],column['key'],typeconverter=column['type'])
-
-        data_model = [
-            {'key':'_edit_time','name':'bearbeitet','type':str},
-            {'key':'_edit_by','name':'bearbeitet von','type':str},
-            {'key':'_id','name':'id','type':str},
-        ]
-
-        for column in data_model:
-            treeview.add_column(column['name'],column['key'],editable=False)
+        for key,model in data_model.items():
+            if hasattr(app,'liststore_%s'%key):
+                renderer = CellRendererAutoComplete(getattr(app,'liststore_%s'%key))
+            else:
+                renderer = Gtk.CellRendererText()
+            treeview.add_column(
+                model['name'],key,from_view=model.get('from_view'),
+                to_view=model.get('to_view'),editable=model['editable'],
+                renderer=renderer)
 
         self.add(treeview)
-
 
 
 class TransactionWindow(Gtk.Window):
     def __init__(self,app):
         super(self.__class__,self).__init__(title='Add Transaction')
-        self.client = app.client
         self.app = app
 
-        #listbox = Gtk.Box()
-        listbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
-        self.add(listbox)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
+        self.add(box)
 
         # info bar
         self.infobar = Gtk.InfoBar()
         self.infolabel = Gtk.Label()
         content = self.infobar.get_content_area()
         content.add(self.infolabel)
-        listbox.add(self.infobar)
-        self.infobar.connect('response',self.on_response)
+        box.add(self.infobar)
 
         # date
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        label = Gtk.Label("Datum", xalign=0)
-        vbox.pack_start(label, True, True, 0)
-        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=50)
-        vbox.pack_start(hbox, True, True, 0)
-
-        self.date = Gtk.Entry(xalign=0)
-        self.date.set_text(datetime.datetime.strftime(datetime.datetime.now(),'%d.%m.%Y'))
-        hbox.pack_start(self.date, True, True, 0)
-
-        calendar = Gtk.Button('C')
-        calendar.props.valign = Gtk.Align.CENTER
-        hbox.pack_start(calendar, False, True, 0)
-
-        listbox.add(vbox)
+        box.add(self.add_entry('date',data_model['date']['name']))
 
         # splits
+        self.liststore = Gtk.ListStore(object)
+        treeview = DictTreeView(self.liststore)
+        treeview.connect('edited',self.on_edited)
 
-        self.splits = Gtk.ListStore(float, str,str)
-        self.splits.append([0.0, "",""])
-        treeview = Gtk.TreeView(model=self.splits)
+        for key in ('amount','category','comment'):
+            model = data_model[key]
+            if hasattr(app,'liststore_%s'%key):
+                renderer = CellRendererAutoComplete(getattr(app,'liststore_%s'%key))
+            else:
+                renderer = Gtk.CellRendererText()
+            treeview.add_column(
+                model['name'],key,from_view=model.get('from_view'),
+                to_view=model.get('to_view'),editable=model['editable'],
+                renderer=renderer)
 
-        renderer_editabletext = Gtk.CellRendererText()
-        renderer_editabletext.set_property("editable", True)
-        column_editabletext = Gtk.TreeViewColumn(
-            "Amount",renderer_editabletext, text=0)
-        treeview.append_column(column_editabletext)
-        renderer_editabletext.connect("edited", self.on_splits_amount_edited)
+        box.add(treeview)
 
-        category_completition = Gtk.EntryCompletion()
-        category_completition.set_model(liststore_categories)
-        category_completition.set_text_column(0)
-        category_completition.set_inline_completion(True)
-
-        renderer_editabletext = CellRendererAutoComplete(category_completition)
-        renderer_editabletext.set_property("editable", True)
-        column_editabletext = Gtk.TreeViewColumn(
-            "Category",renderer_editabletext, text=1)
-        treeview.append_column(column_editabletext)
-        renderer_editabletext.connect("edited", self.on_splits_category_edited)
-
-        renderer_editabletext = Gtk.CellRendererText()
-        renderer_editabletext.set_property("editable", True)
-        column_editabletext = Gtk.TreeViewColumn(
-            "Comment",renderer_editabletext, text=2)
-        treeview.append_column(column_editabletext)
-        renderer_editabletext.connect("edited", self.on_splits_comment_edited)
-
-        listbox.add(treeview)
-
-        # payee
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.payee = Gtk.Entry(xalign=0)
-        label = Gtk.Label("Client", xalign=0)
-        client_completition = Gtk.EntryCompletion()
-        client_completition.set_model(liststore_clients)
-        client_completition.set_text_column(0)
-        #client_completition.set_inline_completion(True)
-        self.payee.set_completion(client_completition)
-        vbox.pack_start(label, True, True, 0)
-        vbox.pack_start(self.payee, True, True, 0)
-        listbox.add(vbox)
-
-        # account
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.account = Gtk.Entry(xalign=0)
-        label = Gtk.Label("Account", xalign=0)
-        vbox.pack_start(label, True, True, 0)
-        vbox.pack_start(self.account, True, True, 0)
-        listbox.add(vbox)
-
-        # tags
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.tags = Gtk.Entry(xalign=0)
-        label = Gtk.Label("Tags", xalign=0)
-        vbox.pack_start(label, True, True, 0)
-        vbox.pack_start(self.tags, True, True, 0)
-        listbox.add(vbox)
-
-        # comment
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.comment = Gtk.Entry(xalign=0)
-        label = Gtk.Label("Comment", xalign=0)
-        vbox.pack_start(label, True, True, 0)
-        vbox.pack_start(self.comment, True, True, 0)
-        listbox.add(vbox)
+        for key in ('client','account','tags','comment'):
+            model = data_model[key]
+            box.add(self.add_entry(
+                key,model['name'],
+                completition_liststore=getattr(app,'liststore_%s'%key,None)))
 
         # enter
         button= Gtk.Button('Enter')
         button.connect('clicked',self.on_entered)
-        listbox.add(button)
+        box.add(button)
 
+        self.set_initial_values()
         self.show_all()
 
-    def _set_initial_values(self):
-        self.date.set_text(datetime.datetime.strftime(datetime.datetime.now(),'%d.%m.%Y'))
-        self.splits.clear()
-        self.splits.append([0.0, "",""])
-        self.payee.set_text('')
-        self.account.set_text('')
-        self.comment.set_text('')
+    def add_entry(self,key,labeltext,completition_liststore=None):
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        entry = Gtk.Entry(xalign=0)
+        label = Gtk.Label(labeltext, xalign=0)
+        if completition_liststore:
+            completition = Gtk.EntryCompletion()
+            completition.set_model(completition_liststore)
+            completition.set_text_column(0)
+            entry.set_completion(completition)
+        vbox.pack_start(label, True, True, 0)
+        vbox.pack_start(entry, True, True, 0)
+        setattr(self,'entry_%s'%key,entry)
+        return vbox
+
+    def on_edited(self,store,path,key):
+        self._remove_row(path)
+        self._apend_row()
+
+    def set_initial_values(self):
+        self.entry_date.set_text(
+            datetime.datetime.strftime(datetime.datetime.now(),DATE))
+        self.liststore.clear()
+        self.liststore.append([{'amount':0.0,'category':'','comment':''}])
+        self.entry_client.set_text('')
+        self.entry_account.set_text('')
+        self.entry_comment.set_text('')
         self.infolabel.set_text('')
 
-    def on_splits_amount_edited(self,widget,path,text):
-        try:
-            value = float(text)
-        except:
-            logging.info('couldn\'t convert amount to float')
-        self.splits[path][0] = value
-        if value != 0.0:
-            self._apend_row()
-        else:
-            self._remove_row(path)
-
-    def on_splits_category_edited(self,widget,path,text):
-        self.splits[path][1] = text
-        if text == '':
-            self._remove_row(path)
-
-    def on_splits_comment_edited(self,widget,path,text):
-        self.splits[path][2] = text
-        if text == '':
-            self._remove_row(path)
-
     def _apend_row(self):
-        if self.splits[-1][0] != 0:
-            self.splits.append([0.0,'',''])
+        row = self.liststore[-1][0]
+        if row['amount'] or row['category'] or row['comment']:
+            self.liststore.append([{'amount':0.0,'category':'','comment':''}])
 
     def _remove_row(self,path):
-        if int(path) < len(self.splits)-1:
-            row = self.splits[path]
-            if row[0] == 0 and row[1] == '' and row[2] == '':
-                self.splits.remove(self.splits._getiter(path))
-
-    def on_response(self,widget,event):
-        widget.hide()
+        if int(path) < len(self.liststore)-1:
+            row = self.liststore[path][0]
+            if row['amount'] == 0 and row['category'] == '' and row['comment'] == '':
+                self.liststore.remove(self.liststore._getiter(path))
 
     def on_entered(self,button):
         d = {}
-        d['date'] = self.date.get_text()
-        d['client'] = self.payee.get_text()
-        d['tags'] = self.tags.get_text().split(',')
-        d['account'] = self.account.get_text()
-        d['splits'] = splits = []
-        for i in range(len(self.splits)-1):
-            splits.append(
-                {'amount':self.splits[i][0],
-                 'category':self.splits[i][1],
-                 'comment':self.splits[i][2]
-                 }
-            )
-        d['comment'] = self.comment.get_text()
-        resp = handle_errors(self.infolabel,self.infobar,self.client.put('',d))
+        d['date'] = self.entry_date.get_text()
+        d['client'] = self.entry_client.get_text()
+        d['tags'] = self.entry_tags.get_text().split(',')
+        d['account'] = self.entry_account.get_text()
+        d['comment'] = self.entry_comment.get_text()
+        docs = []
+        for i in range(len(self.liststore)-1):
+            row = self.liststore[i][0]
+            doc = deepcopy(d)
+            doc['amount'] = row['amount']
+            doc['category'] = row['category']
+            if doc['comment'] and row['comment']:
+                doc['comment'] = ', '.join(doc['comment'],row['comment'])
+            else:
+                doc['comment'] = max(row['comment'],doc['comment'])
+            docs.append(doc)
+        if not docs:
+            docs = d
+        resp = handle_errors(self.infolabel,self.infobar,self.app.client.post('',docs))
         if resp:
-            self._set_initial_values()
-            for item in resp['_items']:
-                self.app.liststore.append([item])
+            self.set_initial_values()
 
-
-    def on_payees_changed(self,value):
-        pass
-
-    def on_accounts_changed(self,value):
-        pass
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super(self.__class__,self).__init__(title="Accounter", application=app)
         self.set_default_size(800, 800)
 
-        # a grid to attach the toolbar
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
-        #transaction_widget = TransactionWindow(app.client)
-        #notebook.append_page(transaction_widget,Gtk.Label('Add',xalign=0))
-        #paned.add1(notebook)
-        # a toolbar created in the method create_toolbar (see below)
         toolbar = self.create_toolbar()
         # with extra horizontal space
         toolbar.set_hexpand(True)
@@ -320,11 +279,10 @@ class MainWindow(Gtk.ApplicationWindow):
         toolbar.show()
         # attach the toolbar to the grid
         box.add(toolbar)
-
         # set infobar
         box.add(app.infobar)
-
-        result_widget = ResultWidget(app.liststore,app)
+        # get result widget
+        result_widget = ResultWidget(app)
         box.add(result_widget)
         # add the grid to the window
         self.add(box)
@@ -364,22 +322,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
         return toolbar
 
-    # callback method for fullscreen / leave fullscreen
-    def fullscreen_callback(self, action, parameter):
-        # check if the state is the same as Gdk.WindowState.FULLSCREEN, which is a bit flag
-        is_fullscreen = self.get_window().get_state() & Gdk.WindowState.FULLSCREEN != 0
-        if not is_fullscreen:
-            self.fullscreen_button.set_stock_id(Gtk.STOCK_LEAVE_FULLSCREEN)
-            self.fullscreen()
-        else:
-            self.fullscreen_button.set_stock_id(Gtk.STOCK_FULLSCREEN)
-            self.unfullscreen()
-
-
 class LoginWindow(Gtk.Window):
-    def __init__(self,app):
+    def __init__(self,client):
         super(self.__class__,self).__init__(title='Sign In')
         self.set_default_size(300, 100)
+        self.set_resizable(False)
         topbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
         box.set_size_request(200,150)
@@ -403,29 +350,32 @@ class LoginWindow(Gtk.Window):
         # sign in
         button = Gtk.Button('Sign in')
         button.set_size_request(200,50)
-        button.connect('clicked',self.login_callback,app)
+        button.connect('clicked',self.login_callback,client)
         box.add(button)
         topbox.add(box)
         self.add(topbox)
         self.show_all()
 
-    def login_callback(self,button,app):
+    def login_callback(self,button,client):
         resp = handle_errors(
             self.infolabel,
             self.infobar,
-            app.client.signin(
+            client.signin(
                 self.username_entry.get_text(),self.password_entry.get_text())
         )
         if resp:
             self.close()
-            app.update_callback()
 
 
 class Application(Gtk.Application):
     def __init__(self):
         super(self.__class__,self).__init__()
         self.client = Client()
-        self.liststore = Gtk.ListStore(object)
+        self.liststore_search = Gtk.ListStore(object)
+        self.liststore_account = Gtk.ListStore(str)
+        self.liststore_tags = Gtk.ListStore(str)
+        self.liststore_client = Gtk.ListStore(str)
+        self.liststore_category = Gtk.ListStore(str)
         self.infolabel = Gtk.Label()
         self.infobar = Gtk.InfoBar()
         self._transaction_window = None
@@ -434,7 +384,7 @@ class Application(Gtk.Application):
         content = self.infobar.get_content_area()
         content.add(self.infolabel)
         self._edited = False
-        self._edited_docs = set()
+        self._edited_docs = {}
 
     def do_activate(self):
         win = MainWindow(self)
@@ -445,10 +395,6 @@ class Application(Gtk.Application):
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
-
-        # create the actions that control the window and connect their signal to a
-        # callback method (see below):
-
         # new
         new_action = Gio.SimpleAction.new("add", None)
         new_action.connect("activate", self.transaction_callback)
@@ -501,35 +447,71 @@ class Application(Gtk.Application):
 
     def update_callback(self,*args):
         if not self._edited:
-            resp = handle_errors(self.infolabel,self.infobar,self.client.get(''))
+            resp = handle_errors(
+                self.infolabel,self.infobar,self.client.get(''))
             if resp:
-                items = resp['_items']
-                length = len(self.liststore)
-                for i in range(min(length,len(items))):
-                    self.liststore.set_row(self.liststore._getiter(i),[items[i]])
-                if len(items) > length:
-                    for doc in items[length:]:
-                        self.liststore.append([doc])
-                else:
-                    for i in range(length)[len(items):]:
-                        self.liststore.remove(self.liststore._getiter(i))
+                self.update_liststore_search(resp['_items'])
+            resp = handle_errors(
+                self.infolabel,self.infobar,self.client.get('accounts/'))
+            if resp:
+                self.update_liststore_str_generic(
+                    self.liststore_account,resp['_items'])
+            resp = handle_errors(
+                self.infolabel,self.infobar,self.client.get('clients/'))
+            if resp:
+                self.update_liststore_str_generic(
+                    self.liststore_client,resp['_items'])
+            resp = handle_errors(
+                self.infolabel,self.infobar,self.client.get('categories/'))
+            if resp:
+                self.update_liststore_str_generic(
+                    self.liststore_category,resp['_items'])
             # it is important that the function returns True, otherwise it will
-            # wait infinitely
+            # wait infinitely if used in Gobject scheduled timeout
             return True
 
-    def on_edited(self,store,path,key,value):
+    def update_liststore_str_generic(self,liststore,items):
+        liststore.clear()
+        for item in items:
+            liststore.append([item])
+
+    def update_liststore_search(self,items):
+        length = len(self.liststore_search)
+        for i in range(min(length,len(items))):
+            self.liststore_search.set_row(self.liststore_search._getiter(i),[items[i]])
+        if len(items) > length:
+            for doc in items[length:]:
+                self.liststore_search.append([doc])
+        else:
+            for i in range(length)[len(items):]:
+                self.liststore_search.remove(self.liststore_search._getiter(i))
+
+    def on_edited(self,treeview,path,key):
         self._edited = True
         self.infolabel.set_text('unsaved changes')
+        self.infobar.set_message_type(Gtk.MessageType.INFO)
         self.update_action.set_enabled(False)
-        self._history.append({'path':path,'key':key,'value':value})
-        self._edited_docs.add((path,key))
+        value = treeview.get_model()[path][0].get(key)
+        change = {'path':path,'key':key,'value':value}
+        self._history.append(change)
+        if not path in self._edited_docs:
+            self._edited_docs[path] = [change]
+        else:
+            self._edited_docs[path].append(change)
 
     def save_callback(self,*args):
-        d = []
-        for path,key in self._edited_docs:
-            d.append({'_id':self.liststore[path][0]['_id'],key:self.liststore[path][0][key]})
-        print(d)
-
+        data = []
+        for path in self._edited_docs:
+            data.append(self.liststore_search[path][0])
+        if data:
+            resp = handle_errors(
+                self.infolabel,self.infobar,self.client.post('',data))
+        if resp and resp.get('status') == 'Ok':
+            self._edited_docs.clear()
+            self._edited = False
+            self.infolabel.set_text('')
+            self.infobar.set_message_type(Gtk.MessageType.INFO)
+            self.update_action.set_enabled(True)
 
 app = Application()
 #FF6600;

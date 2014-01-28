@@ -236,12 +236,12 @@ def get_payload():
         InvalidUsage('Unknown or no Content-Type header supplied')
 
 def get_docs():
-    p = get_payload()
-    if p:
-        if isinstance(p,dict):
-            return [p]
+    payload = get_payload()
+    if payload:
+        if isinstance(payload,dict):
+            return [payload]
         else:
-            return data
+            return payload
 
 
 def str_to_date(string):
@@ -249,7 +249,10 @@ def str_to_date(string):
 
     :param string: the RFC-1123 string to convert to datetime value.
     """
-    return dateutil.parser.parse(string) if string else None
+    try:
+        return dateutil.parser.parse(string) if string else None
+    except:
+        return None
 
 def date_to_str(date):
     """ Converts a datetime value to the corresponding RFC-1123 string.
@@ -259,7 +262,7 @@ def date_to_str(date):
     if not date.minute:
         return datetime.datetime.strftime(date,'%d.%m.%Y') if date else None
     else:
-        return datetime.datetime.strftime(date,'%d.%m.%Y %H:%M:%S') if date else None
+        return datetime.datetime.strftime(date,'%d.%m.%Y-%H:%M:%S') if date else None
 
 
 def calc_hash(value):
