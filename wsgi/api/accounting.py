@@ -49,10 +49,12 @@ def create_search(payload):
 
 class Buchungen(MethodView):
     def get(self):
+        """ get all transactions"""
         docs = current_app.db.buchungen.find()
         return send_response({'_items':[doc for doc in docs]})
 
     def post(self):
+        """ create new transactions or update existing ones; in bulk possible"""
         docs = get_docs()
         if not docs:
             return send_response({
@@ -72,39 +74,15 @@ class Buchungen(MethodView):
                 updated.append(current_app.db.buchungen.update(query,payload))
         return send_response({'_items':updated,'status':'Ok'})
 
-    def patch(self):
-        docs = get_docs()
-        if not docs:
-            return send_response({
-                'message':'no data provided'},status=400)
-        updated = []
-        for doc in docs:
-            payload = serialize(doc,buchungs_schema)
-            payload['_edit_time'] = datetime.datetime.now()
-            if not buchungs_validator.validate_update(payload):
-                return send_response({
-                    'issues':buchungs_validator.errors},status=400)
-            if not '_id' in payload:
-                return send_response({
-                    'issues':{'_id':'required field'}},status=400)
-            _id = payload.pop('_id')
-            current_app.db.buchungen.update({'_id':_id},{'$set':payload})
-            updated.append(current_app.db.buchungen.find_one(_id))
-        return send_response({'message':'updated %s docs'%len(updated),'_items':updated})
-
 class Search(MethodView):
     def post(self):
         payload = get_payload()
         if payload:
-            search = create_search(payload)
-            if not search:
-                return send_response({
-                    'message':'search must be dict'},status=400)
-            docs = current_app.db.buchungen.find(search)
-            return send_response({'_items':[doc for doc in docs]})
+            search = serialize(payload,buchungs_schema)
         else:
-            return send_response({
-                'message':'no payload data provided'},status=400)
+            search = {}
+        docs = current_app.db.buchungen.find(search)
+        return send_response({'_items':[doc for doc in docs]})
 
 
 @mod.route('/payees/')
