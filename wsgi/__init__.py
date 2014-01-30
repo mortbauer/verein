@@ -11,6 +11,10 @@ def create_app():
     configure_extensions(app)
     # configure blueprints
     configure_blueprints(app)
+    @app.rout('/')
+    def helllo():
+        return 'hello'
+
     return app
 
 def configure_blueprints(app):
