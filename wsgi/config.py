@@ -1,7 +1,7 @@
 DEBUG = True
 TESTING = True
 CSRF_ENABLED = True
-MONGO_DBNAME = 'mortbauer'
+MONGO_DBNAME = 'verein'
 MONGO_HOST = 'localhost'
 MONGO_PORT = 27017
 SECRET_KEY = 'martin' #u'\x80\x11aO \x95x\xc3\x8eJ5\xe2\xca>/{\x8c\xe3V!\xc0[\x92\x1c'
