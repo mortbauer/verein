@@ -10,7 +10,7 @@ from ..login import check_valid_auth
 # TODO check for special forbidden operators see: http://docs.mongodb.org/manual/reference/limits/
 mod = Blueprint('accounting', __name__, url_prefix='/api/accounting')
 # secure the whole blueprint
-#mod.before_request(check_valid_auth)
+mod.before_request(check_valid_auth)
 
 buchungs_schema = {
     'date':{'type':'datetime','required':True},
