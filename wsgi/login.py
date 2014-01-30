@@ -31,19 +31,22 @@ def login():
     if session.get('user_id'):
         return send_response({'message':'you are already logged in'})
     auth = request.authorization
-    username =  auth.username
-    password = auth.password
-    user = current_app.db.users.find_one({'username':username})
-    if user:
-        if current_app.bcrypt.check_password_hash(user['password'], password):
-            session['user_id'] = user['user_id']
-            return send_response({'message':'login successful'})
+    if auth:
+        username =  auth.username
+        password = auth.password
+        user = current_app.db.users.find_one({'username':username})
+        if user:
+            if current_app.bcrypt.check_password_hash(user['password'], password):
+                session['user_id'] = user['user_id']
+                return send_response({'message':'login successful'})
+            else:
+                return send_response({'message':'wrong passphrase'},status=400)
         else:
-            return send_response({'message':'wrong passphrase'},status=400)
+            if not username:
+                return send_response({'message':'provide a username'},status=400)
+            else:
+                return send_response({'message':'unknown user "{0}"'.format(username)},status=400)
     else:
-        if not username:
-            return send_response({'message':'provide a username'},status=400)
-        else:
-            return send_response({'message':'unknown user "{0}"'.format(username)},status=400)
+        return send_response({'message':'username and password required'},status=400)
 
 

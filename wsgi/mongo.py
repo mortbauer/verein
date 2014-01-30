@@ -18,7 +18,6 @@ class Mongo(object):
             user = ''
         host = '{d[host]}:{d[port]}'.format(d=kwargs)
         fulluri = 'mongodb://{user}{host}'.format(user=user,host=host)
-        #self.connection = MongoClient(fulluri)
-        self.connection = MongoClient('mongodb://admin:xzIzWL9NZd-I@127.3.160.2:27017')
+        self.connection = MongoClient(fulluri)
         self.db = self.connection[app.config['MONGO_DBNAME']]
         self.fs = GridFS(self.db)
