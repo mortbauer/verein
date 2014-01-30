@@ -18,8 +18,35 @@ logger.addHandler(handler)
 # TODO look for example at the project sta Treealigner on ow to separate the ui
 # and the logic
 
+css = """
+.error {
+    background-color: #8B0000;
+}
+.warning {
+    background-color: #FF8C00;
+}
+.info {
+    background-color: #BCEE68;
+}
+
+@binding-set gtk-vi-text-view
+{
+    bind "F9" { "toggle-pane" ()};
+}
+"""
+
+style_provider = Gtk.CssProvider()
+style_provider.load_from_data(css)
+
+Gtk.StyleContext.add_provider_for_screen(
+    Gdk.Screen.get_default(),
+    style_provider,
+    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+)
+
 DATE = '%d.%m.%Y'
 DATETIME = '%d.%m.%Y-%H:%M:%S'
+ISSUE_COLOR = Gdk.RGBA(0.5,0.5,0.5)
 
 data_model = OrderedDict((
     ('date',{'name':'Durchführungsdatum',
@@ -40,113 +67,6 @@ data_model = OrderedDict((
     ('_id',{'name':'id','editable':False}),
 ))
 
-def handle_errors(infolabel,infobar,resp):
-    if resp[0] == 200:
-        infolabel.set_text('')
-        infobar.set_message_type(Gtk.MessageType.INFO)
-        return resp[1] if resp[1] else True
-    else:
-        if 'issues' in resp[1]:
-            info = ', '.join(['%s: %s'%(k,v) for k,v in resp[1]['issues'].items()])
-            mtype = Gtk.MessageType.WARNING
-        else:
-            info = resp[1].get('message','')
-            mtype = Gtk.MessageType.ERROR
-        infolabel.set_text(info)
-        infobar.set_message_type(mtype)
-
-class CellRendererAutoComplete(Gtk.CellRendererText):
-    # http://stackoverflow.com/a/13769663/1607448
-    """ Text entry cell which accepts a Gtk.EntryCompletion object """
-
-    __gtype_name__ = 'CellRendererAutoComplete'
-
-    def __init__(self, liststore,key):
-        super(self.__class__,self).__init__()
-        self.key = key
-        if isinstance(liststore,Gtk.ListStore):
-            self.completion = Gtk.EntryCompletion()
-            self.completion.set_model(liststore)
-            self.completion.set_text_column(0)
-
-        else:
-            raise Exception('must be of type Gtk.ListStore, got %s'%type(liststore))
-
-
-    def do_start_editing(
-               self, event, treeview, path, background_area, cell_area, flags):
-        if not self.get_property('editable'):
-            return
-        entry = Gtk.Entry()
-        entry.set_text(treeview.get_model()[path][0][self.key])
-        entry.set_completion(self.completion)
-        entry.connect('editing-done', self.editing_done, path)
-        entry.show()
-        entry.grab_focus()
-        return entry
-
-    def editing_done(self,entry,path):
-        self.emit('edited', path, entry.get_text())
-
-class DictTreeView(Gtk.TreeView):
-    __gsignals__ = {
-            'edited': (GObject.SIGNAL_RUN_LAST, None,(object,object))
-        }
-
-    def __init__(self,liststore):
-        super(self.__class__,self).__init__(liststore)
-
-    def add_column(self,name,key,liststore=None,
-                   editable=True,from_view=None,to_view=None):
-        if not liststore:
-            renderer = Gtk.CellRendererText()
-        else:
-            renderer = CellRendererAutoComplete(liststore,key)
-        renderer.set_property("editable", editable)
-        column = Gtk.TreeViewColumn(name,renderer)
-        column.set_resizable(True)
-        column.set_reorderable(True)
-        column.set_cell_data_func(renderer,self.dict_cell_data_func,(0,key,to_view))
-        if editable:
-            renderer.connect('edited',self.on_cells_edited,key,from_view)
-        super(self.__class__,self).append_column(column)
-
-    @staticmethod
-    def dict_cell_data_func(column, cellrenderer, model, iterator, data):
-        # http://faq.pygtk.org/index.py?req=edit&file=faq13.029.htp
-        value = model.get_value(iterator, data[0]).get(data[1],'')
-        try:
-            text = data[2](value) if data[2] else str(value)
-            cellrenderer.set_property("text", text)
-        except:
-            logger.error('failed to format {0}'.format(value))
-
-    def on_cells_edited(self,widget,path,text,key,from_view=None):
-        try:
-            value = from_view(text) if from_view else text
-            if self.get_model()[path][0].get(key) != value:
-                self.get_model()[path][0][key] = value
-                self.emit('edited',path,key)
-        except:
-            logger.error('failed to process {0}'.format(text))
-
-class ResultWidget(Gtk.ScrolledWindow):
-    def __init__(self,app):
-        super(self.__class__,self).__init__()
-        treeview = DictTreeView(app.liststore_search)
-        treeview.connect('edited',app.on_edited)
-        treeview.set_vexpand(True)
-        treeview.set_hexpand(True)
-
-        for key,model in data_model.items():
-            treeview.add_column(
-                model['name'],key,from_view=model.get('from_view'),
-                to_view=model.get('to_view'),editable=model['editable'],
-                liststore=getattr(app,'liststore_%s'%key,None)
-            )
-
-        self.add(treeview)
-
 def make_search_start_end(text,from_view=None):
     if '~' in text:
         start,end = text.split('~',1)
@@ -166,9 +86,135 @@ def make_search_start_end(text,from_view=None):
             text = from_view(text)
         return text
 
-class SearchWidget(Gtk.Box):
+def handle_errors(infolabel,infobar,resp):
+    if 200 <= resp[0] and resp[0] <= 300:
+        return resp[1]
+    else:
+        info = resp[1].get('message','')
+        infolabel.set_text(info)
+        infobar.set_message_type(Gtk.MessageType.WARNING)
+
+class BaseWidget(Gtk.Box):
+    def __init__(self,*args):
+        super(Gtk.Box,self).__init__(orientation=Gtk.Orientation.VERTICAL,spacing=5)
+        self.infobar = Gtk.InfoBar()
+        self.infolabel = Gtk.Label()
+        self.infobar.get_content_area().add(self.infolabel)
+        for arg in args:
+            self.add(arg)
+        self.add(self.infobar)
+
+    def handle_errors(self,(status,resp)):
+        if 200 <= status and status <= 300:
+            return resp
+        else:
+            info = resp.get('message','')
+            self.infolabel.set_text(info)
+            self.infobar.set_message_type(Gtk.MessageType.WARNING)
+
+class CellRendererAutoComplete(Gtk.CellRendererText):
+    # http://stackoverflow.com/a/13769663/1607448
+    """ Text entry cell which accepts a Gtk.EntryCompletion object """
+
+    __gtype_name__ = 'CellRendererAutoComplete'
+
+    def __init__(self, liststore,key):
+        super(CellRendererAutoComplete,self).__init__()
+        self.key = key
+        if isinstance(liststore,Gtk.ListStore):
+            self.completion = Gtk.EntryCompletion()
+            self.completion.set_model(liststore)
+            self.completion.set_text_column(0)
+
+        else:
+            raise Exception('must be of type Gtk.ListStore, got %s'%type(liststore))
+
+
+    def do_start_editing(
+               self, event, treeview, path, background_area, cell_area, flags):
+        if not self.get_property('editable'):
+            return
+        entry = Gtk.Entry()
+        entry.set_text(treeview.get_model()[path][0].get(self.key,''))
+        entry.set_completion(self.completion)
+        entry.connect('editing-done', self.editing_done, path)
+        entry.show()
+        entry.grab_focus()
+        return entry
+
+    def editing_done(self,entry,path):
+        self.emit('edited', path, entry.get_text())
+
+class DictTreeView(Gtk.TreeView):
+    __gsignals__ = {
+            'edited': (GObject.SIGNAL_RUN_LAST, None,(object,object))
+        }
+
+    def __init__(self,liststore):
+        super(DictTreeView,self).__init__(liststore)
+        self.columns = {}
+
+    def add_column(self,name,key,liststore=None,
+                   editable=True,from_view=None,to_view=None):
+        if not liststore:
+            renderer = Gtk.CellRendererText()
+        else:
+            renderer = CellRendererAutoComplete(liststore,key)
+        renderer.set_property("editable", editable)
+        self.columns[key] = column = Gtk.TreeViewColumn(name,renderer)
+        column.set_resizable(True)
+        column.set_reorderable(True)
+        column.set_cell_data_func(renderer,self.dict_cell_data_func,(0,key,to_view))
+        if editable:
+            renderer.connect('edited',self.on_cells_edited,key,from_view)
+        super(DictTreeView,self).append_column(column)
+
+    @staticmethod
+    def dict_cell_data_func(column, cellrenderer, model, iterator, data):
+        # http://faq.pygtk.org/index.py?req=edit&file=faq13.029.htp
+        value = model.get_value(iterator, data[0]).get(data[1],'')
+        status = model.get_value(iterator, data[0]).get('status','')
+        if status:
+            cellrenderer.set_property("background-rgba", ISSUE_COLOR)
+            cellrenderer.set_property("background-set",True)
+        else:
+            cellrenderer.set_property("background-set",False)
+        try:
+            text = data[2](value) if data[2] else str(value)
+            cellrenderer.set_property("text", text)
+        except:
+            logger.error('failed to format {0}'.format(value))
+
+    def on_cells_edited(self,widget,path,text,key,from_view=None):
+        try:
+            value = from_view(text) if from_view else text
+            if self.get_model()[path][0].get(key) != value:
+                self.get_model()[path][0][key] = value
+                self.emit('edited',path,key)
+        except:
+            logger.error('failed to process {0}'.format(text))
+
+class FilterWindow(Gtk.ScrolledWindow):
     def __init__(self,app):
-        super(self.__class__,self).__init__(orientation=Gtk.Orientation.VERTICAL,spacing=5)
+        super(FilterWindow,self).__init__()
+        treeview = DictTreeView(app.liststore_search)
+        treeview.connect('edited',app.on_edited)
+        treeview.set_vexpand(True)
+        treeview.set_hexpand(True)
+
+        for key,model in data_model.items():
+            treeview.add_column(
+                model['name'],key,from_view=model.get('from_view'),
+                to_view=model.get('to_view'),editable=model['editable'],
+                liststore=getattr(app,'liststore_%s'%key,None)
+            )
+
+        treeview.add_column('Status','status',editable=False)
+        self.add(treeview)
+
+class FilterWidget(Gtk.Box):
+    def __init__(self,app):
+        super(FilterWidget,self).__init__(orientation=Gtk.Orientation.VERTICAL,spacing=5)
 
         for key,model in data_model.items():
             self.add_entry(
@@ -204,28 +250,19 @@ class SearchWidget(Gtk.Box):
                     logger.error('couldn\'t process {0}'.format(value))
         return data
 
-class TransactionWindow(Gtk.Window):
+class TransactionWidget(BaseWidget):
     def __init__(self,app):
-        super(self.__class__,self).__init__(title='Add Transaction')
+        super(TransactionWidget,self).__init__()
         self.app = app
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
-        self.add(box)
-
-        # info bar
-        self.infobar = Gtk.InfoBar()
-        self.infolabel = Gtk.Label()
-        content = self.infobar.get_content_area()
-        content.add(self.infolabel)
-        box.add(self.infobar)
-
         # date
-        box.add(self.add_entry('date',data_model['date']['name']))
+        self.add(self.add_entry('date',data_model['date']['name']))
 
         # splits
         self.liststore = Gtk.ListStore(object)
         treeview = DictTreeView(self.liststore)
         treeview.connect('edited',self.on_edited)
+        #treeview.set_activate_on_single_click(True)
 
         for key in ('amount','category','comment'):
             model = data_model[key]
@@ -235,11 +272,12 @@ class TransactionWindow(Gtk.Window):
                 liststore=getattr(app,'liststore_%s'%key,None)
             )
 
-        box.add(treeview)
+        self.add(treeview)
 
+        # all other entries
         for key in ('client','account','tags','comment'):
             model = data_model[key]
-            box.add(self.add_entry(
+            self.add(self.add_entry(
                 key,model['name'],
                 liststore=getattr(app,'liststore_%s'%key,None)
             ))
@@ -247,7 +285,7 @@ class TransactionWindow(Gtk.Window):
         # enter
         button= Gtk.Button('Enter')
         button.connect('clicked',self.on_entered)
-        box.add(button)
+        self.add(button)
 
         self.set_initial_values()
         self.show_all()
@@ -278,7 +316,9 @@ class TransactionWindow(Gtk.Window):
         self.entry_client.set_text('')
         self.entry_account.set_text('')
         self.entry_comment.set_text('')
+        self.entry_tags.set_text('')
         self.infolabel.set_text('')
+        self.infobar.set_message_type(Gtk.MessageType.INFO)
 
     def _apend_row(self):
         row = self.liststore[-1][0]
@@ -311,30 +351,171 @@ class TransactionWindow(Gtk.Window):
             docs.append(doc)
         if not docs:
             docs = d
-        resp = handle_errors(self.infolabel,self.infobar,self.app.client.post('',docs))
-        if resp:
+
+        resp = self.handle_errors(self.app.client.post('',docs))
+
+        if resp and resp['status'] == 'OK':
             self.set_initial_values()
+        elif resp:
+            issues = {}
+            for item in resp['_items']:
+                if item['status'] == 'OK':
+                    continue
+                issues.update(item['issues'])
+            self.infolabel.set_text(', '.join('%s: %s'%(k,v) for k,v in issues.items()))
+            self.infobar.set_message_type(Gtk.MessageType.WARNING)
+
+
+class StatsWidget(BaseWidget):
+    def __init__(self,app):
+        super(StatsWidget,self).__init__(self.create_toolbar())
+        self.app = app
+        hbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        keys = Gtk.ListStore(str)
+        for key in ('client','account','category'):
+            keys.append([key])
+        hbox.add(self.add_entry('name','Name',box=Gtk.HBox()))
+        hbox.add(self.add_entry('keys','Keys',liststore=keys,box=Gtk.HBox()))
+        hbox.add(self.add_entry('timestep','Zeitschritt',liststore=keys,box=Gtk.HBox()))
+        self.pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.widget_search = FilterWidget(app)
+        hbox.add(self.widget_search)
+        button = Gtk.Button('New')
+        hbox.add(button)
+        self.pane.pack1(hbox,shrink=False)
+        self.notebook = notebook = Gtk.Notebook()
+        notebook.set_scrollable(True)
+        self.pane.add2(notebook)
+        self.add(self.pane)
+        self.add_tab()
+
+    def create_toolbar(self):
+        # a toolbar
+        toolbar = Gtk.Toolbar(hexpand=True)
+
+        # which is the primary toolbar of the application
+        toolbar.get_style_context().add_class(Gtk.STYLE_CLASS_PRIMARY_TOOLBAR);
+
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_ADD)
+        button.set_is_important(True)
+        toolbar.add(button)
+        button.connect('clicked',self.add_tab)
+
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_SAVE)
+        button.set_is_important(True)
+        toolbar.add(button)
+
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_REFRESH)
+        button.set_is_important(True)
+        toolbar.add(button)
+
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_FIND)
+        button.set_is_important(True)
+        toolbar.add(button)
+
+        return toolbar
+
+    def add_tab(self,*args):
+        import json
+        data = json.loads(open('/home/martin/devel/python/accounting/testdata.txt','r').read())
+        self.notebook.append_page(StatsResultsWidget(self.app,data),Gtk.Label('hello'))
+        self.notebook.show_all()
+
+    def add_entry(self,key,labeltext,liststore=None,box=None):
+        if not box:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        entry = Gtk.Entry(xalign=0)
+        entry.set_hexpand(True)
+        label = Gtk.Label(labeltext, xalign=0)
+        label.set_margin_left(10)
+        if liststore:
+            completion = Gtk.EntryCompletion()
+            completion.set_model(liststore)
+            completion.set_text_column(0)
+            entry.set_completion(completion)
+        box.pack_start(label, True, True, 0)
+        box.pack_start(entry, True, True, 0)
+        setattr(self,'entry_%s'%key,entry)
+        return box
+
+class StatsResultsWidget(Gtk.ScrolledWindow):
+    def __init__(self,app,data):
+        super(StatsResultsWidget,self).__init__()
+        treestore = treestore = Gtk.TreeStore(object)
+        treeview = DictTreeView(treestore)
+
+        times = {}
+        months = set()
+        for doc in data:
+            parent = treestore.append(None,[{'_id':doc['_id']['account']}])
+            amounts = zip(doc['month'],doc['amount'],doc['client'])
+            months.update(doc['month'])
+            for client in set(doc['client']):
+                newdoc = {m:a for m,a,c in amounts if c == client}
+                newdoc['client'] = client
+                child = treestore.append(parent,[newdoc])
+
+        treeview.add_column('category','_id',editable=False)
+        treeview.add_column('client','client',editable=False)
+        for key in months:
+            treeview.add_column(key,key,editable=False)
+
+        self.add(treeview)
+
+class StatsTab(Gtk.Box):
+    def __init__(self,app):
+        super(StatsTab,self).__init__(orientation=Gtk.Orientation.VERTICAL)
+
+        hbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        keys = Gtk.ListStore(str)
+        for key in ('client','account','category'):
+            keys.append([key])
+        hbox.add(self.add_entry('keys','Keys',liststore=keys,box=Gtk.HBox()))
+        hbox.add(self.add_entry('timestep','Zeitschritt',liststore=keys,box=Gtk.HBox()))
+        self.add(hbox)
+        self.pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.widget_search = FilterWidget(app)
+        self.pane.pack1(self.widget_search,shrink=False)
+        import json
+        data = json.loads(open('/home/martin/devel/python/accounting/testdata.txt','r').read())
+        self.pane.add2(StatsResultsWidget(app,data))
+        self.add(self.pane)
+
+    def add_entry(self,key,labeltext,liststore=None,box=None):
+        if not box:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        entry = Gtk.Entry(xalign=0)
+        label = Gtk.Label(labeltext, xalign=0)
+        label.set_margin_left(10)
+        if liststore:
+            completion = Gtk.EntryCompletion()
+            completion.set_model(liststore)
+            completion.set_text_column(0)
+            entry.set_completion(completion)
+        box.pack_start(label, True, True, 0)
+        box.pack_start(entry, True, True, 0)
+        setattr(self,'entry_%s'%key,entry)
+        return box
+
 
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
-        super(self.__class__,self).__init__(title="Accounter", application=app)
+        super(MainWindow,self).__init__(title="Accounter", application=app)
         self._search_window_visible = True
-        self._pane_position_old = 0
-        self.set_default_size(1200, 800)
+        self.set_default_size(1400, 800)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
         box.add(self.create_toolbar())
         box.add(app.infobar)
         self.pane = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.widget_search = SearchWidget(app)
+        self.widget_search = FilterWidget(app)
         self.pane.pack1(self.widget_search,shrink=False)
-        self.pane.add2(ResultWidget(app))
+        self.pane.add2(FilterWindow(app))
         box.add(self.pane)
         self.add(box)
 
     def toggle_search(self,*args):
         if self._search_window_visible:
-            self._pane_position_old = self.pane.get_position()
             self.widget_search.set_visible(False)
             self._search_window_visible = False
         else:
@@ -371,30 +552,26 @@ class MainWindow(Gtk.ApplicationWindow):
         toolbar.add(button)
         button.set_action_name("app.search")
 
+        button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_FIND)
+        button.set_is_important(True)
+        toolbar.add(button)
+        button.set_action_name("app.stats")
+
         button = Gtk.ToolButton.new_from_stock(Gtk.STOCK_DIALOG_AUTHENTICATION)
         button.set_is_important(True)
         toolbar.add(button)
         button.set_action_name("app.login")
 
-
         return toolbar
 
-class LoginWindow(Gtk.Window):
-    def __init__(self,client):
-        super(self.__class__,self).__init__(title='Sign In')
-        self.set_default_size(300, 100)
-        self.set_resizable(False)
+class LoginWidget(BaseWidget):
+    def __init__(self,app):
+        super(LoginWidget,self).__init__()
         topbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
         box.set_size_request(200,150)
         box.set_margin_left(50)
         box.set_margin_right(50)
-        # infobar
-        self.infobar = Gtk.InfoBar()
-        self.infolabel = Gtk.Label()
-        content = self.infobar.get_content_area()
-        content.add(self.infolabel)
-        topbox.add(self.infobar)
         # username
         self.username_entry = Gtk.Entry()
         self.username_entry.set_placeholder_text('username')
@@ -407,44 +584,52 @@ class LoginWindow(Gtk.Window):
         # sign in
         button = Gtk.Button('Sign in')
         button.set_size_request(200,50)
-        button.connect('clicked',self.login_callback,client)
+        button.connect('clicked',self.login_callback,app)
         box.add(button)
         topbox.add(box)
         self.add(topbox)
         self.show_all()
 
-    def login_callback(self,button,client):
-        resp = handle_errors(
-            self.infolabel,
-            self.infobar,
-            client.signin(
-                self.username_entry.get_text(),self.password_entry.get_text())
+    def login_callback(self,button,app):
+        resp = self.handle_errors(
+            app.client.signin(
+                self.username_entry.get_text(),
+                self.password_entry.get_text())
         )
         if resp:
-            self.close()
+            self.get_parent().close()
 
 class Application(Gtk.Application):
     def __init__(self):
-        super(self.__class__,self).__init__()
+        super(Application,self).__init__()
         self.client = Client()
         self.liststore_search = Gtk.ListStore(object)
         self.search_data = {}
-        self.create_completion()
+        self.create_completion_liststores()
         self.infolabel = Gtk.Label()
         self.infobar = Gtk.InfoBar()
-        self._transaction_window = None
-        self._login_window = None
         self._history = []
         content = self.infobar.get_content_area()
         content.add(self.infolabel)
         self._edited = False
         self._edited_docs = {}
+        self._windows = {
+            'transaction':{
+                'widgetclass':TransactionWidget,
+                'title':'Add Transaction'},
+            'login':{
+                'widgetclass':LoginWidget,
+                'title':'Sign in'},
+            'stats':{
+                'widgetclass':StatsWidget,
+                'title':'Statistics'},
+                         }
 
-    def create_completion(self):
+    def create_completion_liststores(self):
         for key in ('account','client','tags','category'):
-            self._add_completition(key)
+            self.add_completition_liststore(key)
 
-    def _add_completition(self,key):
+    def add_completition_liststore(self,key):
         liststore = Gtk.ListStore(str)
         completion = Gtk.EntryCompletion()
         completion.set_model(liststore)
@@ -453,6 +638,11 @@ class Application(Gtk.Application):
 
     def do_activate(self):
         self.window_main = MainWindow(self)
+        Gtk.StyleContext.add_provider(
+            self.window_main.get_style_context(),
+            style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_USER
+        )
         self.window_main.show_all()
         self.update_callback()
         #update_task = GLib.timeout_add_seconds(10,self.do_update)
@@ -461,7 +651,7 @@ class Application(Gtk.Application):
         Gtk.Application.do_startup(self)
         # new
         action = Gio.SimpleAction.new("add", None)
-        action.connect("activate", self.transaction_callback)
+        action.connect("activate", self.show_window_generic,'transaction')
         app.add_action(action)
 
         # update
@@ -476,7 +666,7 @@ class Application(Gtk.Application):
 
         # login
         action = Gio.SimpleAction.new("login", None)
-        action.connect("activate", self.login_callback)
+        action.connect("activate", self.show_window_generic,'login')
         app.add_action(action)
 
         # search
@@ -484,34 +674,31 @@ class Application(Gtk.Application):
         action.connect("activate", self.search_callback)
         app.add_action(action)
 
-    @property
-    def transaction_window(self):
-        if not self._transaction_window:
-            self._transaction_window = TransactionWindow(self)
-            self._transaction_window.connect('delete-event',self.unset_transaction_window)
-        return self._transaction_window
+        # search
+        action = Gio.SimpleAction.new("stats", None)
+        action.connect("activate", self.show_window_generic,'stats')
+        app.add_action(action)
 
-    def unset_transaction_window(self,*args):
-        self._transaction_window = None
-
-    def transaction_callback(self, action, parameter):
-        self.transaction_window.show()
-        self.transaction_window.present()
-
-    @property
-    def login_window(self):
-        if not self._login_window:
-            self._login_window = LoginWindow(self.client)
-            self._login_window.connect('delete-event',self.unset_login_window)
-        return self._login_window
-
-    def unset_login_window(self,*args):
-        self._login_window = None
-
-    # callback method for new
-    def login_callback(self, action, parameter):
-        self.login_window.show()
-        self.login_window.present()
+    def show_window_generic(self,*args):
+        def hide_window_generic(window,event):
+            window.set_visible(False)
+            # causes Gtk-CRITICAL messages, shouldn't be needed anyways
+            #window.set_sensitive(False)
+            return True
+        windowname = args[-1]
+        if 'window' in self._windows[windowname]:
+            window = self._windows[windowname]['window']
+            window.set_sensitive(True)
+            window.set_visible(True)
+            window.present()
+        else:
+            window = Gtk.Window(title=self._windows[windowname]['title'])
+            widget = self._windows[windowname]['widgetclass'](self)
+            window.add(widget)
+            window.connect('delete-event',hide_window_generic)
+            window.show_all()
+            self._windows[windowname]['window'] = window
+            self._windows[windowname]['widget'] = widget
 
     def update_callback(self,*args):
         if not self._edited:
@@ -555,7 +742,7 @@ class Application(Gtk.Application):
             for i in reversed(range(length)[len(items):]):
                 self.liststore_search.remove(self.liststore_search._getiter(i))
 
-    def on_edited(self,treeview,path,key):
+    def on_edited(self,treeview,path ,key):
         self._edited = True
         self.infolabel.set_text('unsaved changes')
         self.infobar.set_message_type(Gtk.MessageType.INFO)
@@ -563,50 +750,45 @@ class Application(Gtk.Application):
         value = treeview.get_model()[path][0].get(key)
         change = {'path':path,'key':key,'value':value}
         self._history.append(change)
-        if not path in self._edited_docs:
-            self._edited_docs[path] = [change]
-        else:
-            self._edited_docs[path].append(change)
+        _id = treeview.get_model()[path][0]['_id']
+        self._edited_docs[_id] = path
 
     def save_callback(self,*args):
         data = []
-        for path in self._edited_docs:
-            data.append(self.liststore_search[path][0])
-        if data:
-            resp = handle_errors(
-                self.infolabel,self.infobar,self.client.post('',data))
-        if resp and resp.get('status') == 'Ok':
+        for _id,path in self._edited_docs.items():
+            doc = self.liststore_search[path][0]
+            if 'status' in doc:
+                doc.pop('status')
+            data.append(doc)
+        if not data:
+            return
+        resp = handle_errors(
+            self.infolabel,self.infobar,self.client.post('',data))
+        if resp and resp['status'] == 'OK':
             self._edited_docs.clear()
             self._edited = False
             self.infolabel.set_text('')
             self.infobar.set_message_type(Gtk.MessageType.INFO)
             self.update_action.set_enabled(True)
+        else:
+            self.infolabel.set_text('there where errors')
+            self.infobar.set_message_type(Gtk.MessageType.WARNING)
+            for doc in resp['_items']:
+                _id = doc['_item']['_id']
+                if doc['status'] == 'OK':
+                    self._edited_docs.pop(_id)
+                else:
+                    path = self._edited_docs[_id]
+                    issues = ', '.join(['%s: %s'%(k,v) for k,v in doc['issues'].items()])
+                    self.liststore_search[path][0]['status'] = issues
+
 
     def search_callback(self,*args):
         self.window_main.toggle_search()
 
-app = Application()
 
-css = """
-.error {
-    background-color: #8B0000;
-}
-.warning {
-    background-color: #FF8C00;
-}
-.info {
-    background-color: #BCEE68;
-}
-"""
-
-style_provider = Gtk.CssProvider()
-style_provider.load_from_data(css)
-
-Gtk.StyleContext.add_provider_for_screen(
-    Gdk.Screen.get_default(),
-    style_provider,
-    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-)
-exit_status = app.run(sys.argv)
-sys.exit(exit_status)
+if __name__ == '__main__':
+    app = Application()
+    exit_status = app.run(sys.argv)
+    sys.exit(exit_status)
 
