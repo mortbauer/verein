@@ -7,5 +7,5 @@ MONGO_PORT = 27017
 SECRET_KEY = 'martin' #u'\x80\x11aO \x95x\xc3\x8eJ5\xe2\xca>/{\x8c\xe3V!\xc0[\x92\x1c'
 #MONGO_URI = 'mongodb://{0}:{1}'.format(MONGO_HOST,MONGO_PORT)
 APP_NAME = 'verein'
-SERVER_NAME = 'localhost:5000'
+SERVER_NAME = 'verein-mortbauer.rhcloud.com'
 TMP = '/tmp'
