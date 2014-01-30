@@ -6,7 +6,7 @@ def create_app():
     app = Flask(__name__,template_folder='templates', static_folder='static')
     # configure from config file
     app.config.from_object('%s.config'%__name__)
-    app.config.from_pyfile('production.py', silent=True)
+    app.config.from_pyfile('production.py')#, silent=True)
     # configure extensions
     configure_extensions(app)
     # configure blueprints
@@ -26,6 +26,7 @@ def configure_blueprints(app):
 def configure_extensions(app):
     from . mongo import Mongo
     mongo = Mongo(app)
+    app.mongo = mongo
     app.db = mongo.db.mortbauer
     from simplekv.memory import DictStore
     from flask.ext.kvsession import KVSessionExtension
