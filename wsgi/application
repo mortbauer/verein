@@ -20,3 +20,4 @@ except IOError:
 
 from wsgi import create_app
 application = create_app()
+print('#####################################')
