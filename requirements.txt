@@ -1,11 +1,8 @@
 flask
 flask-script
 pymongo
-flask-restful
 cerberus
 simplejson
 python-dateutil
-flask-login
 flask-kvsession
-bcrypt
 flask-bcrypt
