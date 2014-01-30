@@ -11,7 +11,7 @@ def create_app():
     configure_extensions(app)
     # configure blueprints
     configure_blueprints(app)
-    @app.rout('/')
+    @app.route('/')
     def helllo():
         return 'hello'
 
