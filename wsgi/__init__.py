@@ -23,9 +23,7 @@ def configure_extensions(app):
     from . mongo import Mongo
     mongo = Mongo(app)
     app.db = mongo.db.mortbauer
-    from simplekv.memory import DictStore
-    from flask.ext.kvsession import KVSessionExtension
-    store = DictStore()
-    KVSessionExtension(store, app)
+    from . mongosession import MongoSessionInterface
+    app.session_interface = MongoSessionInterface(db=app.config['MONGO_DBNAME'])
     from flask.ext.bcrypt import Bcrypt
     app.bcrypt = Bcrypt(app)

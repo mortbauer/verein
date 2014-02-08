@@ -4,5 +4,4 @@ pymongo
 cerberus
 simplejson
 python-dateutil
-flask-kvsession
 flask-bcrypt
